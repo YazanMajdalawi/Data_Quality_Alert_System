@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from email_reporter import EmailReporter
 from issue import IssueCollection
+from config import CheckConfig
 
 
 class CheckManager:
@@ -97,10 +98,34 @@ class CheckManager:
         
         return None
     
+    def _get_disabled_check_names(self, all_checks: list, 
+                                  file_to_class_map: dict) -> set:
+        """
+        Resolve disabled check names from configuration to actual class names.
+        
+        Args:
+            all_checks: List of all discovered check instances
+            file_to_class_map: Dictionary mapping file names to class names
+            
+        Returns:
+            set: Set of disabled check class names
+        """
+        disabled_config = CheckConfig.get_disabled_checks()
+        if not disabled_config:
+            return set()
+        
+        disabled_class_names = set()
+        for disabled_name in disabled_config:
+            resolved = self._resolve_check_name(disabled_name, all_checks, file_to_class_map)
+            if resolved:
+                disabled_class_names.add(resolved)
+        
+        return disabled_class_names
+    
     def filter_checks(self, all_checks: list, file_to_class_map: dict,
                      include_names: list = None, exclude_names: list = None) -> tuple:
         """
-        Filter checks based on include/exclude criteria.
+        Filter checks based on include/exclude criteria and disabled checks configuration.
         
         Args:
             all_checks: List of all discovered check instances
@@ -114,6 +139,12 @@ class CheckManager:
         if include_names and exclude_names:
             raise ValueError("Cannot use both --checks and --exclude at the same time")
         
+        # Get disabled checks from configuration
+        disabled_class_names = self._get_disabled_check_names(all_checks, file_to_class_map)
+        
+        # Track disabled checks that were requested via --checks
+        requested_disabled = []
+        
         if include_names:
             # Include mode: only run specified checks
             filtered = []
@@ -123,22 +154,35 @@ class CheckManager:
             for name in include_names:
                 resolved = self._resolve_check_name(name, all_checks, file_to_class_map)
                 if resolved:
-                    resolved_names.append(resolved)
+                    # Check if this check is disabled
+                    if resolved in disabled_class_names:
+                        requested_disabled.append(resolved)
+                    else:
+                        resolved_names.append(resolved)
                 else:
                     not_found.append(name)
             
             if not_found:
                 print(f"Warning: Could not find checks: {', '.join(not_found)}")
             
+            if requested_disabled:
+                formatted_disabled = ', '.join([self._format_check_name(name) for name in requested_disabled])
+                print(f"Warning: The following checks are disabled and will be skipped: {formatted_disabled}")
+            
             for check in all_checks:
                 if check.check_name in resolved_names:
                     filtered.append(check)
             
             if not filtered:
+                if requested_disabled:
+                    return [], f"No valid checks found from: {', '.join(include_names)} (requested checks are disabled)"
                 return [], f"No valid checks found from: {', '.join(include_names)}"
             
             formatted_names = ', '.join([self._format_check_name(name) for name in resolved_names])
             info = f"Selected checks executed: {formatted_names}"
+            if requested_disabled:
+                formatted_disabled = ', '.join([self._format_check_name(name) for name in requested_disabled])
+                info += f" (disabled checks skipped: {formatted_disabled})"
             return filtered, info
         
         elif exclude_names:
@@ -157,21 +201,39 @@ class CheckManager:
             if not_found:
                 print(f"Warning: Could not find checks to exclude: {', '.join(not_found)}")
             
+            # Filter out both excluded and disabled checks
             for check in all_checks:
-                if check.check_name not in excluded_names:
+                if check.check_name not in excluded_names and check.check_name not in disabled_class_names:
                     filtered.append(check)
             
+            excluded_formatted = []
             if excluded_names:
-                formatted_names = ', '.join([self._format_check_name(name) for name in excluded_names])
-                info = f"All checks executed except: {formatted_names}"
+                excluded_formatted.append(', '.join([self._format_check_name(name) for name in excluded_names]))
+            if disabled_class_names:
+                disabled_formatted = ', '.join([self._format_check_name(name) for name in disabled_class_names])
+                excluded_formatted.append(f"disabled: {disabled_formatted}")
+            
+            if excluded_formatted:
+                info = f"All checks executed except: {', '.join(excluded_formatted)}"
             else:
                 info = "All checks executed"
             
             return filtered, info
         
         else:
-            # Default: run all checks
-            return all_checks, "All checks executed"
+            # Default: run all checks except disabled ones
+            filtered = []
+            for check in all_checks:
+                if check.check_name not in disabled_class_names:
+                    filtered.append(check)
+            
+            if disabled_class_names:
+                formatted_disabled = ', '.join([self._format_check_name(name) for name in disabled_class_names])
+                info = f"All checks executed (disabled checks skipped: {formatted_disabled})"
+            else:
+                info = "All checks executed"
+            
+            return filtered, info
     
     def _format_check_name(self, check_name: str) -> str:
         """Format check name by inserting spaces before capital letters."""

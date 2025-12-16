@@ -49,3 +49,23 @@ class EmailConfig:
             'recipients': recipients_list,
         }
 
+
+class CheckConfig:
+    """Configuration for data quality checks."""
+    
+    @staticmethod
+    def get_disabled_checks():
+        """
+        Get list of disabled check names from environment variable.
+        
+        Returns:
+            list: List of disabled check names (case-insensitive, whitespace trimmed)
+        """
+        disabled_checks = os.getenv('DISABLED_CHECKS', '')
+        if not disabled_checks:
+            return []
+        
+        # Split by comma, strip whitespace, and filter out empty strings
+        disabled_list = [check.strip() for check in disabled_checks.split(',') if check.strip()]
+        return disabled_list
+
